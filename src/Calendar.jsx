@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { getApiBase } from "./api.js";
 import "./Calendar.css";
 
@@ -36,6 +36,20 @@ function getDays(monthDate) {
   return days;
 }
 
+function getWeekDays(date) {
+  const day = date.getDay();
+  const start = new Date(date);
+  start.setDate(date.getDate() - day);
+
+  const days = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    days.push(d);
+  }
+  return days;
+}
+
 function fmtTime(isoStr) {
   if (!isoStr || !isoStr.includes("T")) return null;
   const d = new Date(isoStr);
@@ -44,6 +58,61 @@ function fmtTime(isoStr) {
 
 function eventDayKey(isoStr) {
   return isoStr ? isoStr.split("T")[0] : null;
+}
+
+function eventSpansDay(event, date) {
+  const eventStart = new Date(event.start);
+  const eventEnd = new Date(event.end);
+  const dayStart = new Date(date);
+  const dayEnd = new Date(date);
+  dayEnd.setHours(23, 59, 59, 999);
+
+  return eventStart <= dayEnd && eventEnd > dayStart;
+}
+
+function OnScreenKeyboard({ onKeyPress, visible }) {
+  if (!visible) return null;
+
+  const rows = [
+    "1234567890",
+    "qwertyuiop",
+    "asdfghjkl",
+    "zxcvbnm",
+  ];
+
+  return (
+    <div className="keyboard">
+      <div className="keyboard__rows">
+        {rows.map((row, i) => (
+          <div key={i} className="keyboard__row">
+            {row.split("").map(char => (
+              <button
+                key={char}
+                className="keyboard__key"
+                onClick={() => onKeyPress(char)}
+              >
+                {char}
+              </button>
+            ))}
+          </div>
+        ))}
+        <div className="keyboard__row">
+          <button
+            className="keyboard__key keyboard__key--space"
+            onClick={() => onKeyPress(" ")}
+          >
+            space
+          </button>
+          <button
+            className="keyboard__key keyboard__key--del"
+            onClick={() => onKeyPress("Backspace")}
+          >
+            ⌫
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default function Calendar() {
@@ -56,6 +125,10 @@ export default function Calendar() {
   const [loading, setLoading] = useState(false);
   const [calLists, setCalLists] = useState({});
   const [showAdd, setShowAdd] = useState(false);
+  const [viewMode, setViewMode] = useState("month");
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const [focusedInput, setFocusedInput] = useState(null);
+  const inputRefs = useRef({});
   const [form, setForm] = useState({
     summary: "",
     date: today.toISOString().split("T")[0],
@@ -94,14 +167,31 @@ export default function Calendar() {
   useEffect(() => { fetchEvents(month); }, [month, fetchEvents]);
   useEffect(() => { fetchCalLists(); }, [fetchCalLists]);
 
-  const days = getDays(month);
+  const days = viewMode === "month" ? getDays(month) : getWeekDays(selected);
 
   const eventsOn = (date) => {
-    const key = date.toISOString().split("T")[0];
-    return events.filter(e => eventDayKey(e.start) === key);
+    return events.filter(e => eventSpansDay(e, date));
   };
 
   const selectedEvents = selected ? eventsOn(selected) : [];
+
+  const handleKeyboardInput = (char) => {
+    if (!focusedInput) return;
+
+    const input = inputRefs.current[focusedInput];
+    if (!input) return;
+
+    if (char === "Backspace") {
+      const value = input.value;
+      input.value = value.slice(0, -1);
+    } else {
+      input.value += char;
+    }
+
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    const event = new Event("input", { bubbles: true });
+    input.dispatchEvent(event);
+  };
 
   const handleDayClick = (date) => {
     setSelected(date);
@@ -154,24 +244,55 @@ export default function Calendar() {
       <div className="cal-nav">
         <button
           className="cal-nav__arrow"
-          onClick={() => setMonth(m => new Date(m.getFullYear(), m.getMonth() - 1, 1))}
-          aria-label="Previous month"
+          onClick={() => {
+            if (viewMode === "month") {
+              setMonth(m => new Date(m.getFullYear(), m.getMonth() - 1, 1));
+            } else {
+              setSelected(d => new Date(d.getTime() - 7 * 24 * 60 * 60 * 1000));
+            }
+          }}
+          aria-label="Previous"
         >
           ‹
         </button>
         <div className="cal-nav__center">
           <span className="cal-nav__title">
-            {MONTHS[month.getMonth()]} {month.getFullYear()}
+            {viewMode === "month"
+              ? `${MONTHS[month.getMonth()]} ${month.getFullYear()}`
+              : `Week ${Math.ceil((selected.getDate() + new Date(selected.getFullYear(), selected.getMonth(), 1).getDay()) / 7)}`
+            }
           </span>
           {loading && <span className="cal-nav__spin" aria-hidden />}
         </div>
         <button
           className="cal-nav__arrow"
-          onClick={() => setMonth(m => new Date(m.getFullYear(), m.getMonth() + 1, 1))}
-          aria-label="Next month"
+          onClick={() => {
+            if (viewMode === "month") {
+              setMonth(m => new Date(m.getFullYear(), m.getMonth() + 1, 1));
+            } else {
+              setSelected(d => new Date(d.getTime() + 7 * 24 * 60 * 60 * 1000));
+            }
+          }}
+          aria-label="Next"
         >
           ›
         </button>
+        <div className="cal-nav__views">
+          <button
+            className={`cal-nav__view${viewMode === "month" ? " cal-nav__view--on" : ""}`}
+            onClick={() => setViewMode("month")}
+            title="Month view"
+          >
+            M
+          </button>
+          <button
+            className={`cal-nav__view${viewMode === "week" ? " cal-nav__view--on" : ""}`}
+            onClick={() => setViewMode("week")}
+            title="Week view"
+          >
+            W
+          </button>
+        </div>
         <button
           className="cal-nav__today"
           onClick={() => {
@@ -189,44 +310,79 @@ export default function Calendar() {
 
         {/* Grid */}
         <div className="cal-grid-wrap">
-          <div className="cal-weekdays">
-            {WEEKDAYS.map(d => <div key={d} className="cal-wd">{d}</div>)}
-          </div>
-          <div className="cal-grid">
-            {days.map(({ date, current }, i) => {
-              const isToday = isSameDay(date, today);
-              const isSel = selected && isSameDay(date, selected);
-              const dayEvents = eventsOn(date);
-              const accountsSeen = [...new Map(dayEvents.map(e => [e.account, e])).values()];
-              return (
-                <button
-                  key={i}
-                  className={[
-                    "cal-day",
-                    !current && "cal-day--out",
-                    isToday && "cal-day--today",
-                    isSel && !isToday && "cal-day--sel",
-                    isSel && isToday && "cal-day--sel-today",
-                  ].filter(Boolean).join(" ")}
-                  onClick={() => handleDayClick(date)}
-                  aria-label={date.toLocaleDateString()}
-                  aria-pressed={isSel}
-                >
-                  <span className="cal-day__num">{date.getDate()}</span>
-                  {accountsSeen.length > 0 && (
-                    <div className="cal-day__dots">
-                      {accountsSeen.slice(0, 3).map(e => (
-                        <span
-                          key={e.account}
-                          className={`cal-dot cal-dot--${e.account.toLowerCase()}`}
-                        />
-                      ))}
+          {viewMode === "month" ? (
+            <>
+              <div className="cal-weekdays">
+                {WEEKDAYS.map(d => <div key={d} className="cal-wd">{d}</div>)}
+              </div>
+              <div className="cal-grid">
+                {days.map(({ date, current }, i) => {
+                  const isToday = isSameDay(date, today);
+                  const isSel = selected && isSameDay(date, selected);
+                  const dayEvents = eventsOn(date);
+                  const accountsSeen = [...new Map(dayEvents.map(e => [e.account, e])).values()];
+                  return (
+                    <button
+                      key={i}
+                      className={[
+                        "cal-day",
+                        !current && "cal-day--out",
+                        isToday && "cal-day--today",
+                        isSel && !isToday && "cal-day--sel",
+                        isSel && isToday && "cal-day--sel-today",
+                      ].filter(Boolean).join(" ")}
+                      onClick={() => handleDayClick(date)}
+                      aria-label={date.toLocaleDateString()}
+                      aria-pressed={isSel}
+                    >
+                      <span className="cal-day__num">{date.getDate()}</span>
+                      {accountsSeen.length > 0 && (
+                        <div className="cal-day__dots">
+                          {accountsSeen.slice(0, 3).map(e => (
+                            <span
+                              key={e.account}
+                              className={`cal-dot cal-dot--${e.account.toLowerCase()}`}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="cal-week-header">
+                {days.map(date => {
+                  const isToday = isSameDay(date, today);
+                  const isSel = selected && isSameDay(date, selected);
+                  return (
+                    <div
+                      key={date.toISOString()}
+                      className={`cal-week-day${isToday ? " cal-week-day--today" : ""}${isSel ? " cal-week-day--sel" : ""}`}
+                      onClick={() => handleDayClick(date)}
+                    >
+                      <div className="cal-week-wd">{WEEKDAYS[date.getDay()]}</div>
+                      <div className="cal-week-num">{date.getDate()}</div>
                     </div>
-                  )}
-                </button>
-              );
-            })}
-          </div>
+                  );
+                })}
+              </div>
+              <div className="cal-week-body">
+                {days.map(date => (
+                  <div key={date.toISOString()} className="cal-week-col">
+                    {eventsOn(date).map((e, i) => (
+                      <div key={e.uid ?? i} className={`cal-week-event cal-week-event--${e.account.toLowerCase()}`}>
+                        <div className="cal-week-event__time">{fmtTime(e.start)}</div>
+                        <div className="cal-week-event__title">{e.summary}</div>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
 
         {/* Detail panel */}
@@ -256,36 +412,48 @@ export default function Calendar() {
           {showAdd && (
             <div className="cal-form">
               <input
+                ref={el => inputRefs.current.summary = el}
                 className="cal-input"
                 placeholder="Event title"
                 value={form.summary}
                 autoFocus
                 onChange={e => setForm(f => ({ ...f, summary: e.target.value }))}
                 onKeyDown={e => e.key === "Enter" && handleAdd()}
+                onFocus={() => setFocusedInput("summary")}
+                onBlur={() => { setFocusedInput(null); setKeyboardVisible(false); }}
               />
               <div className="cal-form__row">
                 <label className="cal-label">Date</label>
                 <input
+                  ref={el => inputRefs.current.date = el}
                   type="date"
                   className="cal-input cal-input--sm"
                   value={form.date}
                   onChange={e => setForm(f => ({ ...f, date: e.target.value }))}
+                  onFocus={() => setFocusedInput("date")}
+                  onBlur={() => { setFocusedInput(null); setKeyboardVisible(false); }}
                 />
               </div>
               <div className="cal-form__row">
                 <label className="cal-label">Time</label>
                 <input
+                  ref={el => inputRefs.current.startTime = el}
                   type="time"
                   className="cal-input cal-input--sm"
                   value={form.startTime}
                   onChange={e => setForm(f => ({ ...f, startTime: e.target.value }))}
+                  onFocus={() => { setFocusedInput("startTime"); setKeyboardVisible(true); }}
+                  onBlur={() => { setFocusedInput(null); setKeyboardVisible(false); }}
                 />
                 <span className="cal-form__arr">→</span>
                 <input
+                  ref={el => inputRefs.current.endTime = el}
                   type="time"
                   className="cal-input cal-input--sm"
                   value={form.endTime}
                   onChange={e => setForm(f => ({ ...f, endTime: e.target.value }))}
+                  onFocus={() => { setFocusedInput("endTime"); setKeyboardVisible(true); }}
+                  onBlur={() => { setFocusedInput(null); setKeyboardVisible(false); }}
                 />
               </div>
               {accounts.length > 0 && (
@@ -371,6 +539,9 @@ export default function Calendar() {
           </div>
         </div>
       </div>
+
+      {/* On-screen keyboard */}
+      <OnScreenKeyboard visible={keyboardVisible} onKeyPress={handleKeyboardInput} />
     </div>
   );
 }
